@@ -60,8 +60,9 @@ $recs = $sdk->getRecommendations(['userId' => '42', 'limit' => 5]);
 ## Release Flow
 
 - CI runs on pushes and pull requests against PHP 8.4.
-- Publishing is handled by `.github/workflows/publish.yml` when you push a `v*` tag.
-- If you want Packagist refreshes from GitHub Actions, add `PACKAGIST_USERNAME` and `PACKAGIST_TOKEN` repo secrets.
+- Packagist is already connected to the GitHub repository and auto-updates from pushes.
+- Pushes to `main` refresh `dev-main` on Packagist, and pushed `v*` git tags become installable versioned releases.
+- `.github/workflows/publish.yml` runs validation and tests on tag pushes before or alongside those releases.
 
 ## License
 

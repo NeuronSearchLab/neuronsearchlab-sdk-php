@@ -173,11 +173,82 @@ function testAutoSessionIdIsAttached(): void
     expectSame($sessionId, $event['session_id'] ?? null, 'Expected session_id on the event payload.');
 }
 
+function testWhitespaceRequestAndSessionIdsSuppressAutoPropagation(): void
+{
+    $requests = [];
+
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'collateWindowSeconds' => 0,
+        'httpClient' => static function (string $url, array $init) use (&$requests): array {
+            $requests[] = ['url' => $url, 'init' => $init];
+
+            if (str_contains($url, '/recommendations')) {
+                return [
+                    'status' => 200,
+                    'statusText' => 'OK',
+                    'headers' => [],
+                    'body' => json_encode([
+                        'request_id' => 'req-123',
+                        'recommendations' => [],
+                    ], JSON_THROW_ON_ERROR),
+                ];
+            }
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => json_encode(['success' => true], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $sdk->getRecommendations(['userId' => 'u1']);
+    $sdk->trackEvent([
+        'eventId' => 7,
+        'userId' => 'u1',
+        'itemId' => 'i7',
+        'requestId' => '   ',
+        'sessionId' => '   ',
+    ])->wait();
+
+    $body = json_decode($requests[1]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
+    $event = is_array($body) && array_is_list($body) ? $body[0] : $body;
+
+    expectSame('   ', $event['requestId'] ?? null, 'Expected original whitespace requestId to be preserved.');
+    expect(!isset($event['request_id']), 'Expected propagated request_id to stay suppressed when requestId is whitespace.');
+    expectSame('   ', $event['sessionId'] ?? null, 'Expected original whitespace sessionId to be preserved.');
+    expect(!isset($event['session_id']), 'Expected auto session_id to stay suppressed when sessionId is whitespace.');
+}
+
+function testRecommendationResponsePreservesRawBodyShape(): void
+{
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'httpClient' => static function (): array {
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => 'plain-text-response',
+            ];
+        },
+    ]);
+
+    $response = $sdk->getRecommendations(['userId' => 'u1']);
+    expectSame('plain-text-response', $response, 'Expected raw non-JSON recommendation responses to be preserved.');
+}
+
 $tests = [
     'testBatchesEventsAndPreservesOrder',
     'testPropagatesRecommendationRequestIds',
     'testRetriesAfterFailure',
     'testAutoSessionIdIsAttached',
+    'testWhitespaceRequestAndSessionIdsSuppressAutoPropagation',
+    'testRecommendationResponsePreservesRawBodyShape',
 ];
 
 foreach ($tests as $test) {

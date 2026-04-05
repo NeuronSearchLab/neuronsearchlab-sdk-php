@@ -79,6 +79,12 @@ final class NeuronSDK
             $this->sessionId = self::generateSessionId();
         }
 
+        if (!is_callable($this->httpClient) && !function_exists('curl_init')) {
+            throw new InvalidArgumentException(
+                'cURL is not available in this environment. Provide config.httpClient.'
+            );
+        }
+
         $this->registerShutdownFlush();
     }
 
@@ -203,23 +209,26 @@ final class NeuronSDK
             $this->flushEvents();
         }
 
-        $existingRequestId = $this->normalizeOptionalString(
-            $data['requestId'] ?? $data['request_id'] ?? null
-        );
+        $existingRequestId = is_string($data['requestId'] ?? null)
+            ? $data['requestId']
+            : (is_string($data['request_id'] ?? null) ? $data['request_id'] : null);
 
-        $requestIdToAttach = $existingRequestId === null && $this->propagateRecommendationRequestId
+        $requestIdToAttach = ($existingRequestId === null || $existingRequestId === '')
+            && $this->propagateRecommendationRequestId
             ? $this->lastRecommendationRequestId
             : null;
 
-        $existingSessionId = $this->normalizeOptionalString(
-            $data['sessionId'] ?? $data['session_id'] ?? null
-        );
+        $existingSessionId = is_string($data['sessionId'] ?? null)
+            ? $data['sessionId']
+            : (is_string($data['session_id'] ?? null) ? $data['session_id'] : null);
 
         if ($this->autoSessionId && $this->sessionId === null) {
             $this->sessionId = self::generateSessionId();
         }
 
-        $sessionIdToAttach = $existingSessionId ?? $this->sessionId;
+        $sessionIdToAttach = ($existingSessionId === null || $existingSessionId === '')
+            ? $this->sessionId
+            : null;
 
         $payload = $data;
 
@@ -240,7 +249,7 @@ final class NeuronSDK
             'pending' => $pending,
             'enqueueTime' => microtime(true),
         ];
-        $this->firstBufferedAt ??= microtime(true);
+        $this->firstBufferedAt ??= (float) $this->eventBuffer[array_key_last($this->eventBuffer)]['enqueueTime'];
 
         if ($this->collateWindowMs === 0 || count($this->eventBuffer) >= $this->maxBatchSize) {
             $this->flushEvents();
@@ -324,7 +333,7 @@ final class NeuronSDK
         ]);
     }
 
-    public function getRecommendations(array $options): array
+    public function getRecommendations(array $options): mixed
     {
         $userId = $options['userId'] ?? null;
         if (!is_string($userId) && !is_int($userId)) {
@@ -355,10 +364,10 @@ final class NeuronSDK
             $this->lastRecommendationRequestId = (string) $response['request_id'];
         }
 
-        return is_array($response) ? $response : [];
+        return $response;
     }
 
-    public function getAutoRecommendations(array $options): array
+    public function getAutoRecommendations(array $options): mixed
     {
         $userId = $options['userId'] ?? null;
         if (!is_string($userId) && !is_int($userId)) {
@@ -398,7 +407,7 @@ final class NeuronSDK
             $this->lastRecommendationRequestId = (string) $response['request_id'];
         }
 
-        return is_array($response) ? $response : [];
+        return $response;
     }
 
     private function request(string $pathOrUrl, array $init = []): mixed
