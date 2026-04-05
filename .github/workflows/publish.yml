@@ -1,0 +1,45 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.4"
+          coverage: none
+
+      - name: Validate composer metadata
+        run: composer validate --no-check-publish
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run tests
+        run: composer test
+
+      - name: Trigger Packagist update
+        if: ${{ secrets.PACKAGIST_USERNAME != '' && secrets.PACKAGIST_TOKEN != '' }}
+        run: |
+          curl --fail-with-body --request POST \
+            --user "${PACKAGIST_USERNAME}:${PACKAGIST_TOKEN}" \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}" \
+            --data "repository[url]=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+        env:
+          PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+          PACKAGIST_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+
+      - name: Skip Packagist update
+        if: ${{ secrets.PACKAGIST_USERNAME == '' || secrets.PACKAGIST_TOKEN == '' }}
+        run: echo "PACKAGIST_USERNAME or PACKAGIST_TOKEN is not configured; skipping Packagist notification."

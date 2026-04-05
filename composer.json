@@ -1,0 +1,25 @@
+{
+  "name": "neuronsearchlab/sdk-php",
+  "description": "Official PHP SDK for accessing NeuronSearchLab APIs",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "NeuronSearchLab"
+    }
+  ],
+  "require": {
+    "php": "^8.4"
+  },
+  "autoload": {
+    "psr-4": {
+      "NeuronSearchLab\\": "src/"
+    },
+    "files": [
+      "src/functions.php"
+    ]
+  },
+  "scripts": {
+    "test": "php tests/run.php"
+  }
+}
