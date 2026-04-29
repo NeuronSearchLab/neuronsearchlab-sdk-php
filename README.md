@@ -21,33 +21,37 @@ use function NeuronSearchLab\configureLogger;
 configureLogger(['level' => 'INFO']);
 
 $sdk = new NeuronSDK([
-    'baseUrl' => 'https://api.neuronsearchlab.com',
+    'baseUrl' => 'https://api.neuronsearchlab.com/v1',
     'accessToken' => getenv('NEURON_API_TOKEN'),
     'collateWindowSeconds' => 3,
     'maxBatchSize' => 200,
     'maxBufferedEvents' => 5000,
 ]);
 
-$contentId = 3187;
+$itemId = 'itm_3187';
 
 $sdk->trackEvent([
-    'eventId' => 1,
+    'type' => 'view',
     'userId' => '42',
-    'itemId' => $contentId,
+    'itemId' => $itemId,
     'metadata' => ['action' => 'view'],
 ])->wait();
 
 $sdk->upsertItem([
-    'itemId' => $contentId,
+    'id' => $itemId,
     'name' => 'Premier League Highlights',
     'description' => 'Matchday recap',
     'metadata' => ['league' => 'EPL'],
 ]);
 
-$sdk->patchItem(['itemId' => $contentId, 'active' => true]);
-$sdk->deleteItems(['itemId' => $contentId]);
+$sdk->patchItem(['itemId' => $itemId, 'active' => true]);
+$sdk->deleteItems(['itemId' => $itemId]);
 
-$recs = $sdk->getRecommendations(['userId' => '42', 'limit' => 5]);
+$recs = $sdk->getRecommendations([
+    'userId' => '42',
+    'contextId' => 'ctx_homepage',
+    'limit' => 5,
+]);
 ```
 
 ## Notes

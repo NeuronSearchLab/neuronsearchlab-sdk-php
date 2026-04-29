@@ -58,7 +58,7 @@ final class NeuronSDK
             throw new InvalidArgumentException('baseUrl and accessToken are required');
         }
 
-        $this->baseUrl = rtrim((string) $config['baseUrl'], '/');
+        $this->baseUrl = self::normalizeApiBaseUrl((string) $config['baseUrl']);
         $this->accessToken = (string) $config['accessToken'];
         $this->timeoutMs = (int) ($config['timeoutMs'] ?? 10000);
         $this->maxRetries = (int) ($config['maxRetries'] ?? 2);
@@ -95,7 +95,7 @@ final class NeuronSDK
 
     public function setBaseUrl(string $url): void
     {
-        $this->baseUrl = rtrim($url, '/');
+        $this->baseUrl = self::normalizeApiBaseUrl($url);
     }
 
     public function setTimeout(int $timeoutMs): void
@@ -195,15 +195,7 @@ final class NeuronSDK
 
     public function trackEvent(array $data): PendingResult
     {
-        if (
-            !isset($data['eventId']) || !is_int($data['eventId'])
-            || !isset($data['userId']) || !is_string($data['userId']) && !is_int($data['userId'])
-            || !isset($data['itemId']) || !is_string($data['itemId']) && !is_int($data['itemId'])
-        ) {
-            throw new InvalidArgumentException(
-                'eventId must be a number; userId and itemId must be a string or number'
-            );
-        }
+        $payload = $this->normalizeEventPayload($data);
 
         if ($this->shouldFlushByAge()) {
             $this->flushEvents();
@@ -229,8 +221,6 @@ final class NeuronSDK
         $sessionIdToAttach = ($existingSessionId === null || $existingSessionId === '')
             ? $this->sessionId
             : null;
-
-        $payload = $data;
 
         if ($requestIdToAttach !== null) {
             $payload['request_id'] = $requestIdToAttach;
@@ -265,25 +255,31 @@ final class NeuronSDK
 
     public function upsertItem(array $data): mixed
     {
+        $payload = array_is_list($data)
+            ? array_map(fn (array $item): array => $this->normalizeItemPayload($item), $data)
+            : $this->normalizeItemPayload($data);
+
         return $this->request('/items', [
             'method' => 'POST',
             'headers' => $this->getHeaders(),
-            'body' => $this->encodeJson($data),
+            'body' => $this->encodeJson($payload),
         ]);
     }
 
     public function patchItem(array $input): mixed
     {
-        $itemId = $input['itemId'] ?? null;
+        $itemId = $this->extractItemId($input);
 
         if (!$this->isValidItemIdentifier($itemId)) {
             throw new InvalidArgumentException(
-                'itemId is required and must be a UUID string or positive integer'
+                'itemId is required and must be a prefixed string like itm_abc123'
             );
         }
 
         $patch = $input;
+        unset($patch['id']);
         unset($patch['itemId']);
+        unset($patch['item_id']);
 
         if ($patch === []) {
             throw new InvalidArgumentException(
@@ -292,13 +288,13 @@ final class NeuronSDK
         }
 
         return $this->request('/items/' . rawurlencode((string) $itemId), [
-            'method' => 'PATCH',
+            'method' => 'POST',
             'headers' => $this->getHeaders(),
             'body' => $this->encodeJson($patch),
         ]);
     }
 
-    public function setItemActive(string|int $itemId, bool $active): mixed
+    public function setItemActive(string $itemId, bool $active): mixed
     {
         return $this->patchItem([
             'itemId' => $itemId,
@@ -317,20 +313,34 @@ final class NeuronSDK
         }
 
         foreach ($payload as $entry) {
-            if (!is_array($entry) || !$this->isValidItemIdentifier($entry['itemId'] ?? null)) {
+            if (!is_array($entry) || !$this->isValidItemIdentifier($this->extractItemId($entry))) {
                 throw new InvalidArgumentException(
-                    'itemId is required and must be a UUID string or positive integer'
+                    'itemId is required and must be a prefixed string like itm_abc123'
                 );
             }
         }
 
-        $body = count($payload) === 1 ? $payload[0] : $payload;
+        $responses = [];
 
-        return $this->request('/items', [
-            'method' => 'DELETE',
-            'headers' => $this->getHeaders(),
-            'body' => $this->encodeJson($body),
-        ]);
+        foreach ($payload as $entry) {
+            $itemId = (string) $this->extractItemId($entry);
+            $responses[] = $this->request('/items/' . rawurlencode($itemId), [
+                'method' => 'DELETE',
+                'headers' => $this->getHeaders(),
+            ]);
+        }
+
+        if (count($responses) === 1) {
+            return $responses[0];
+        }
+
+        return [
+            'message' => 'Items deleted successfully',
+            'object' => 'list',
+            'itemIds' => array_map(fn (array $entry): string => (string) $this->extractItemId($entry), $payload),
+            'deletedCount' => count($responses),
+            'data' => $responses,
+        ];
     }
 
     public function getRecommendations(array $options): mixed
@@ -349,7 +359,13 @@ final class NeuronSDK
         }
 
         if (isset($options['limit']) && is_int($options['limit'])) {
-            $query['quantity'] = (string) $options['limit'];
+            $query['limit'] = (string) $options['limit'];
+        }
+
+        if (!empty($options['startingAfter'])) {
+            $query['starting_after'] = (string) $options['startingAfter'];
+        } elseif (!empty($options['starting_after'])) {
+            $query['starting_after'] = (string) $options['starting_after'];
         }
 
         $response = $this->request(
@@ -384,7 +400,7 @@ final class NeuronSDK
         }
 
         foreach ([
-            'limit' => 'quantity',
+            'limit' => 'limit',
             'cursor' => 'cursor',
             'windowDays' => 'window_days',
             'candidateLimit' => 'candidate_limit',
@@ -787,8 +803,7 @@ final class NeuronSDK
 
     private function isValidItemIdentifier(mixed $itemId): bool
     {
-        return is_string($itemId) && trim($itemId) !== ''
-            || is_int($itemId) && $itemId > 0;
+        return is_string($itemId) && preg_match('/^itm_[A-Za-z0-9][A-Za-z0-9_-]*$/', $itemId) === 1;
     }
 
     private function normalizeOptionalString(mixed $value): ?string
@@ -800,6 +815,84 @@ final class NeuronSDK
         $trimmed = trim($value);
 
         return $trimmed === '' ? null : $trimmed;
+    }
+
+    private static function normalizeApiBaseUrl(string $url): string
+    {
+        $trimmed = rtrim($url, '/');
+
+        return preg_match('#/v\d+$#i', $trimmed) === 1 ? $trimmed : $trimmed . '/v1';
+    }
+
+    private function normalizeNonEmptyString(mixed $value): ?string
+    {
+        if (!is_string($value) && !is_int($value) && !is_float($value)) {
+            return null;
+        }
+
+        $trimmed = trim((string) $value);
+
+        return $trimmed === '' ? null : $trimmed;
+    }
+
+    private function extractItemId(array $input): ?string
+    {
+        return $this->normalizeNonEmptyString(
+            $input['id'] ?? $input['item_id'] ?? $input['itemId'] ?? null
+        );
+    }
+
+    private function normalizeItemPayload(array $data): array
+    {
+        $id = $this->extractItemId($data);
+
+        if ($id !== null && !$this->isValidItemIdentifier($id)) {
+            throw new InvalidArgumentException('item id must be a prefixed string like itm_abc123');
+        }
+
+        unset($data['itemId']);
+        unset($data['item_id']);
+
+        if ($id !== null) {
+            $data['id'] = $id;
+        }
+
+        return $data;
+    }
+
+    private function normalizeEventPayload(array $data): array
+    {
+        $userId = $this->normalizeNonEmptyString($data['user_id'] ?? $data['userId'] ?? null);
+        $itemId = $this->normalizeNonEmptyString($data['item_id'] ?? $data['itemId'] ?? null);
+        $type = $this->normalizeNonEmptyString(
+            $data['type']
+                ?? $data['event_type']
+                ?? $data['eventType']
+                ?? $data['event_id']
+                ?? $data['eventId']
+                ?? null
+        );
+
+        if ($userId === null || $itemId === null || $type === null) {
+            throw new InvalidArgumentException('type, userId, and itemId are required');
+        }
+
+        if (!$this->isValidItemIdentifier($itemId)) {
+            throw new InvalidArgumentException('itemId must be a prefixed string like itm_abc123');
+        }
+
+        $occurredAt = isset($data['occurred_at']) && is_int($data['occurred_at'])
+            ? $data['occurred_at']
+            : (isset($data['occurredAt']) && is_int($data['occurredAt'])
+                ? $data['occurredAt']
+                : time());
+
+        $data['user_id'] = $userId;
+        $data['item_id'] = $itemId;
+        $data['type'] = $type;
+        $data['occurred_at'] = $occurredAt;
+
+        return $data;
     }
 
     private function registerShutdownFlush(): void
