@@ -426,6 +426,23 @@ final class NeuronSDK
         return $response;
     }
 
+    public function search(array $options): mixed
+    {
+        $payload = $this->normalizeSearchPayload($options);
+
+        $response = $this->request('/search', [
+            'method' => 'POST',
+            'headers' => $this->getHeaders(),
+            'body' => $this->encodeJson($payload),
+        ]);
+
+        if ($this->propagateRecommendationRequestId && is_array($response) && isset($response['request_id'])) {
+            $this->lastRecommendationRequestId = (string) $response['request_id'];
+        }
+
+        return $response;
+    }
+
     private function request(string $pathOrUrl, array $init = []): mixed
     {
         $method = (string) ($init['method'] ?? 'GET');
@@ -860,6 +877,100 @@ final class NeuronSDK
         return $data;
     }
 
+    private function normalizeSearchPayload(array $options): array
+    {
+        $query = $this->normalizeOptionalString($options['query'] ?? null);
+        if ($query === null) {
+            throw new InvalidArgumentException('query is required');
+        }
+
+        $payload = ['query' => $query];
+        $userId = $this->normalizeNonEmptyString($options['user_id'] ?? $options['userId'] ?? null);
+        $contextId = $this->normalizeOptionalString($options['context_id'] ?? $options['contextId'] ?? null);
+        $contextKey = $this->normalizeOptionalString($options['context_key'] ?? $options['contextKey'] ?? null);
+        $requestId = $this->normalizeOptionalString($options['request_id'] ?? $options['requestId'] ?? null);
+
+        if ($userId !== null) {
+            $payload['user_id'] = $userId;
+        }
+
+        if ($contextId !== null) {
+            $payload['context_id'] = $contextId;
+        }
+
+        if ($contextKey !== null) {
+            $payload['context_key'] = $contextKey;
+        }
+
+        if (isset($options['limit']) && is_numeric($options['limit'])) {
+            $payload['limit'] = (string) max(1, (int) $options['limit']);
+        }
+
+        if ($requestId !== null) {
+            $payload['request_id'] = $requestId;
+        }
+
+        $filters = $options['filter'] ?? $options['filters'] ?? null;
+        if (is_string($filters)) {
+            $payload['filter'] = $filters;
+        } elseif ($this->isStringList($filters)) {
+            $payload['filter'] = $filters;
+        }
+
+        $scope = $options['scope'] ?? null;
+        if (is_string($scope) && trim($scope) !== '') {
+            $payload['scope'] = trim($scope);
+        } elseif (is_array($scope)) {
+            $payload['scope'] = $this->encodeJson($scope);
+        } elseif ($this->isStructuredFilterList($options['filters'] ?? null)) {
+            $payload['scope'] = $this->encodeJson(['filters' => $options['filters']]);
+        }
+
+        $queryRetrievalEnabled = $this->serializeSearchBoolean(
+            $options['query_retrieval_enabled'] ?? $options['queryRetrievalEnabled'] ?? null
+        );
+        if ($queryRetrievalEnabled !== null) {
+            $payload['query_retrieval_enabled'] = $queryRetrievalEnabled;
+        }
+
+        $fusionMethod = $options['fusion_method'] ?? $options['fusionMethod'] ?? null;
+        if ($fusionMethod === 'rrf' || $fusionMethod === 'weighted') {
+            $payload['fusion_method'] = $fusionMethod;
+        }
+
+        foreach ([
+            'semantic_weight' => $options['semantic_weight'] ?? $options['semanticWeight'] ?? null,
+            'keyword_weight' => $options['keyword_weight'] ?? $options['keywordWeight'] ?? null,
+        ] as $payloadKey => $value) {
+            $serialized = $this->serializeSearchNumber($value);
+            if ($serialized !== null) {
+                $payload[$payloadKey] = $serialized;
+            }
+        }
+
+        $keywordFields = $options['keyword_fields'] ?? $options['keywordFields'] ?? null;
+        if ($this->isStringList($keywordFields)) {
+            $payload['keyword_fields'] = implode(',', array_filter(array_map('trim', $keywordFields)));
+        } elseif (is_string($keywordFields) && trim($keywordFields) !== '') {
+            $payload['keyword_fields'] = trim($keywordFields);
+        }
+
+        if (array_key_exists('debug', $options)) {
+            $payload['debug'] = $options['debug'];
+        }
+
+        if (isset($options['explain']) && is_string($options['explain'])) {
+            $payload['explain'] = $options['explain'];
+        }
+
+        $includeSuppressed = $options['include_suppressed'] ?? $options['includeSuppressed'] ?? null;
+        if ($includeSuppressed !== null) {
+            $payload['include_suppressed'] = $includeSuppressed;
+        }
+
+        return $payload;
+    }
+
     private function normalizeEventPayload(array $data): array
     {
         $userId = $this->normalizeNonEmptyString($data['user_id'] ?? $data['userId'] ?? null);
@@ -893,6 +1004,66 @@ final class NeuronSDK
         $data['occurred_at'] = $occurredAt;
 
         return $data;
+    }
+
+    private function isStringList(mixed $value): bool
+    {
+        if (!is_array($value) || !array_is_list($value)) {
+            return false;
+        }
+
+        foreach ($value as $entry) {
+            if (!is_string($entry)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isStructuredFilterList(mixed $value): bool
+    {
+        if (!is_array($value) || !array_is_list($value)) {
+            return false;
+        }
+
+        foreach ($value as $entry) {
+            if (
+                !is_array($entry)
+                || !isset($entry['column'], $entry['operator'])
+                || !array_key_exists('value', $entry)
+            ) {
+                return false;
+            }
+        }
+
+        return $value !== [];
+    }
+
+    private function serializeSearchBoolean(mixed $value): ?string
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_string($value) && trim($value) !== '') {
+            return trim($value);
+        }
+
+        return null;
+    }
+
+    private function serializeSearchNumber(mixed $value): ?string
+    {
+        if ((is_int($value) || is_float($value)) && is_finite((float) $value)) {
+            return (string) $value;
+        }
+
+        if (is_string($value) && trim($value) !== '' && is_numeric($value)) {
+            return trim($value);
+        }
+
+        return null;
     }
 
     private function registerShutdownFlush(): void

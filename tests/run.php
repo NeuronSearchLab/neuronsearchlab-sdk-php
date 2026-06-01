@@ -109,6 +109,81 @@ function testPropagatesRecommendationRequestIds(): void
     expectSame('req-123', $event['request_id'] ?? null, 'Expected propagated request_id.');
 }
 
+function testSearchPostsToCoreApiEndpointAndPropagatesRequestId(): void
+{
+    $requests = [];
+
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'collateWindowSeconds' => 0,
+        'backoffStrategy' => static fn (): int => 1,
+        'httpClient' => static function (string $url, array $init) use (&$requests): array {
+            $requests[] = ['url' => $url, 'init' => $init];
+
+            if (str_ends_with($url, '/search')) {
+                return [
+                    'status' => 200,
+                    'statusText' => 'OK',
+                    'headers' => [],
+                    'body' => json_encode([
+                        'object' => 'list',
+                        'url' => '/v1/search',
+                        'request_id' => '66666666-6666-4666-8666-666666666666',
+                        'query' => 'fresh tech',
+                        'recommendations' => [],
+                        'data' => [],
+                    ], JSON_THROW_ON_ERROR),
+                ];
+            }
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => json_encode(['success' => true], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $result = $sdk->search([
+        'query' => ' fresh tech ',
+        'userId' => 'u1',
+        'contextId' => '101',
+        'limit' => 3,
+        'filter' => ['category:tech'],
+        'queryRetrievalEnabled' => true,
+        'fusionMethod' => 'weighted',
+        'semanticWeight' => 0.7,
+        'keywordWeight' => 0.3,
+        'keywordFields' => ['name', 'description'],
+    ]);
+
+    expectSame('/v1/search', $result['url'] ?? null, 'Expected search response URL.');
+    expectSame('https://api.example.com/v1/search', $requests[0]['url'], 'Expected Core API search URL.');
+    expectSame('POST', $requests[0]['init']['method'], 'Expected POST search request.');
+
+    $payload = json_decode($requests[0]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
+    expectSame('fresh tech', $payload['query'] ?? null, 'Expected trimmed search query.');
+    expectSame('u1', $payload['user_id'] ?? null, 'Expected user ID.');
+    expectSame('101', $payload['context_id'] ?? null, 'Expected context ID.');
+    expectSame('3', $payload['limit'] ?? null, 'Expected string limit.');
+    expectSame(['category:tech'], $payload['filter'] ?? null, 'Expected shorthand filters.');
+    expectSame('true', $payload['query_retrieval_enabled'] ?? null, 'Expected string boolean.');
+    expectSame('weighted', $payload['fusion_method'] ?? null, 'Expected fusion method.');
+    expectSame('0.7', $payload['semantic_weight'] ?? null, 'Expected semantic weight.');
+    expectSame('0.3', $payload['keyword_weight'] ?? null, 'Expected keyword weight.');
+    expectSame('name,description', $payload['keyword_fields'] ?? null, 'Expected keyword fields CSV.');
+
+    $sdk->trackEvent(['type' => 'click', 'userId' => 'u1', 'itemId' => 'itm_i30'])->wait();
+    $event = json_decode($requests[1]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
+    expectSame(
+        '66666666-6666-4666-8666-666666666666',
+        $event['request_id'] ?? null,
+        'Expected search request_id to propagate to events.'
+    );
+}
+
 function testRetriesAfterFailure(): void
 {
     $requests = [];
@@ -249,6 +324,7 @@ function testRecommendationResponsePreservesRawBodyShape(): void
 $tests = [
     'testBatchesEventsAndPreservesOrder',
     'testPropagatesRecommendationRequestIds',
+    'testSearchPostsToCoreApiEndpointAndPropagatesRequestId',
     'testRetriesAfterFailure',
     'testAutoSessionIdIsAttached',
     'testWhitespaceRequestAndSessionIdsSuppressAutoPropagation',

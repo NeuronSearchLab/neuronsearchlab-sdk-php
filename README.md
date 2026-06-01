@@ -1,6 +1,6 @@
 # neuronsearchlab/sdk-php
 
-Official PHP SDK for the NeuronSearchLab API. It exposes a single `NeuronSDK` class (track events, upsert items, patch and delete items, request recommendations) plus `configureLogger()` for opt-in diagnostic output.
+Official PHP SDK for the NeuronSearchLab Core API. It exposes a single `NeuronSDK` class (track events, upsert items, patch and delete items, request recommendations, run search) plus `configureLogger()` for opt-in diagnostic output.
 
 ## Installation
 
@@ -52,6 +52,14 @@ $recs = $sdk->getRecommendations([
     'contextId' => 'ctx_homepage',
     'limit' => 5,
 ]);
+
+$results = $sdk->search([
+    'query' => 'latest football highlights',
+    'userId' => '42',
+    'contextId' => 'ctx_homepage',
+    'limit' => 5,
+    'filter' => ['category:sports'],
+]);
 ```
 
 ## Notes
@@ -60,6 +68,7 @@ $recs = $sdk->getRecommendations([
 - PHP does not have browser lifecycle hooks, so event batching is process-local. Buffered events flush when `flushEvents()` is called, when the batch limit is reached, when an older buffer exceeds the collate window on a later `trackEvent()`, or automatically at shutdown.
 - `trackEvent()` returns a `PendingResult`; call `->wait()` to force delivery and surface any transport error immediately.
 - Request ID propagation, session ID handling, array-batch fallback, and retry behavior mirror the TypeScript SDK as closely as PHP’s synchronous runtime allows.
+- `search()` posts to the public Core API `/v1/search` AWS API Gateway endpoint. It does not call the console Platform API.
 
 ## Release Flow
 
