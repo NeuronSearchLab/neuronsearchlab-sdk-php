@@ -272,7 +272,7 @@ final class NeuronSDK
 
         if (!$this->isValidItemIdentifier($itemId)) {
             throw new InvalidArgumentException(
-                'itemId is required and must be a prefixed string like itm_abc123'
+                'itemId is required and must be a non-empty string'
             );
         }
 
@@ -308,14 +308,14 @@ final class NeuronSDK
 
         if ($payload === []) {
             throw new InvalidArgumentException(
-                'itemId is required and must be a UUID string or positive integer'
+                'itemId is required and must be a non-empty string'
             );
         }
 
         foreach ($payload as $entry) {
             if (!is_array($entry) || !$this->isValidItemIdentifier($this->extractItemId($entry))) {
                 throw new InvalidArgumentException(
-                    'itemId is required and must be a prefixed string like itm_abc123'
+                    'itemId is required and must be a non-empty string'
                 );
             }
         }
@@ -820,7 +820,7 @@ final class NeuronSDK
 
     private function isValidItemIdentifier(mixed $itemId): bool
     {
-        return is_string($itemId) && preg_match('/^itm_[A-Za-z0-9][A-Za-z0-9_-]*$/', $itemId) === 1;
+        return is_string($itemId) && trim($itemId) !== '';
     }
 
     private function normalizeOptionalString(mixed $value): ?string
@@ -864,7 +864,7 @@ final class NeuronSDK
         $id = $this->extractItemId($data);
 
         if ($id !== null && !$this->isValidItemIdentifier($id)) {
-            throw new InvalidArgumentException('item id must be a prefixed string like itm_abc123');
+            throw new InvalidArgumentException('item id must be a non-empty string');
         }
 
         unset($data['itemId']);
@@ -989,7 +989,7 @@ final class NeuronSDK
         }
 
         if (!$this->isValidItemIdentifier($itemId)) {
-            throw new InvalidArgumentException('itemId must be a prefixed string like itm_abc123');
+            throw new InvalidArgumentException('itemId must be a non-empty string');
         }
 
         $occurredAt = isset($data['occurred_at']) && is_int($data['occurred_at'])

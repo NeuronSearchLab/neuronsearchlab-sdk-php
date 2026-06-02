@@ -44,8 +44,8 @@ function testBatchesEventsAndPreservesOrder(): void
         },
     ]);
 
-    $pendingOne = $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'itm_i1']);
-    $pendingTwo = $sdk->trackEvent(['type' => 'click', 'userId' => 'u1', 'itemId' => 'itm_i2']);
+    $pendingOne = $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'item-1']);
+    $pendingTwo = $sdk->trackEvent(['type' => 'click', 'userId' => 'u1', 'itemId' => 'item-2']);
 
     $sdk->flushEvents();
 
@@ -56,9 +56,9 @@ function testBatchesEventsAndPreservesOrder(): void
     expectSame(2, count($body), 'Expected two events in the batch.');
     expectSame('view', $body[0]['type'], 'Expected first event to preserve order.');
     expectSame('u1', $body[0]['user_id'], 'Expected first event user_id.');
-    expectSame('itm_i1', $body[0]['item_id'], 'Expected first event item_id.');
+    expectSame('item-1', $body[0]['item_id'], 'Expected first event item_id.');
     expectSame('click', $body[1]['type'], 'Expected second event to preserve order.');
-    expectSame('itm_i2', $body[1]['item_id'], 'Expected second event item_id.');
+    expectSame('item-2', $body[1]['item_id'], 'Expected second event item_id.');
     expect(isset($body[0]['client_ts']), 'Expected first event client timestamp.');
     expect(isset($body[1]['client_ts']), 'Expected second event client timestamp.');
 
@@ -101,7 +101,7 @@ function testPropagatesRecommendationRequestIds(): void
     ]);
 
     $sdk->getRecommendations(['userId' => 'u1', 'limit' => 5]);
-    $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'itm_i3'])->wait();
+    $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'item-3'])->wait();
 
     expectSame(2, count($requests), 'Expected one recommendation call and one event call.');
     $body = json_decode($requests[1]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
@@ -175,7 +175,7 @@ function testSearchPostsToCoreApiEndpointAndPropagatesRequestId(): void
     expectSame('0.3', $payload['keyword_weight'] ?? null, 'Expected keyword weight.');
     expectSame('name,description', $payload['keyword_fields'] ?? null, 'Expected keyword fields CSV.');
 
-    $sdk->trackEvent(['type' => 'click', 'userId' => 'u1', 'itemId' => 'itm_i30'])->wait();
+    $sdk->trackEvent(['type' => 'click', 'userId' => 'u1', 'itemId' => 'item-30'])->wait();
     $event = json_decode($requests[1]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
     expectSame(
         '66666666-6666-4666-8666-666666666666',
@@ -214,13 +214,13 @@ function testRetriesAfterFailure(): void
         },
     ]);
 
-    $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'itm_i5'])->wait();
+    $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'item-5'])->wait();
 
     expectSame(2, $attempts, 'Expected a retry after the first network failure.');
     $body = json_decode($requests[count($requests) - 1]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
     $event = is_array($body) && array_is_list($body) ? $body[0] : $body;
     expectSame('view', $event['type'], 'Expected the retried event payload.');
-    expectSame('itm_i5', $event['item_id'], 'Expected the retried item_id.');
+    expectSame('item-5', $event['item_id'], 'Expected the retried item_id.');
 }
 
 function testAutoSessionIdIsAttached(): void
@@ -244,7 +244,7 @@ function testAutoSessionIdIsAttached(): void
     ]);
 
     $sessionId = $sdk->getSessionId();
-    $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'itm_i6'])->wait();
+    $sdk->trackEvent(['type' => 'view', 'userId' => 'u1', 'itemId' => 'item-6'])->wait();
 
     expect(is_string($sessionId) && $sessionId !== '', 'Expected an auto-generated session ID.');
     $body = json_decode($requests[0]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
@@ -288,7 +288,7 @@ function testWhitespaceRequestAndSessionIdsSuppressAutoPropagation(): void
     $sdk->trackEvent([
         'type' => 'view',
         'userId' => 'u1',
-        'itemId' => 'itm_i7',
+        'itemId' => 'item-7',
         'requestId' => '   ',
         'sessionId' => '   ',
     ])->wait();

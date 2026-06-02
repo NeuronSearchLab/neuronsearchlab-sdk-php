@@ -28,7 +28,7 @@ $sdk = new NeuronSDK([
     'maxBufferedEvents' => 5000,
 ]);
 
-$itemId = 'itm_3187';
+$itemId = 'item-3187';
 
 $sdk->trackEvent([
     'type' => 'view',
@@ -49,14 +49,14 @@ $sdk->deleteItems(['itemId' => $itemId]);
 
 $recs = $sdk->getRecommendations([
     'userId' => '42',
-    'contextId' => 'ctx_homepage',
+    'contextId' => 'homepage',
     'limit' => 5,
 ]);
 
 $results = $sdk->search([
     'query' => 'latest football highlights',
     'userId' => '42',
-    'contextId' => 'ctx_homepage',
+    'contextId' => 'homepage',
     'limit' => 5,
     'filter' => ['category:sports'],
 ]);
