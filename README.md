@@ -1,6 +1,6 @@
 # neuronsearchlab/sdk-php
 
-Official PHP SDK for the NeuronSearchLab Core API. It exposes a single `NeuronSDK` class (track events, upsert items, patch and delete items, request recommendations, run search) plus `configureLogger()` for opt-in diagnostic output.
+Official PHP SDK for the NeuronSearchLab Core API. It exposes a single `NeuronSDK` class for recommendation systems work: track events, sync catalogue items, patch and delete items, request personalized recommendations, run product/content search, and preserve request attribution for ranking quality analysis.
 
 ## Installation
 
@@ -61,6 +61,12 @@ $results = $sdk->search([
     'filter' => ['category:sports'],
 ]);
 ```
+
+## Resources
+
+- Docs hub: https://docs.neuronsearchlab.com
+- PHP SDK guide: https://docs.neuronsearchlab.com/sdk/php
+- Recommendation systems reading path: https://www.neuronsearchlab.com/blog/recommendation-systems
 
 ## Notes
 

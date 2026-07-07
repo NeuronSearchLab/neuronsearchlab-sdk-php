@@ -1,6 +1,6 @@
 {
   "name": "neuronsearchlab/sdk-php",
-  "description": "Official PHP SDK for accessing NeuronSearchLab APIs",
+  "description": "Official PHP SDK for NeuronSearchLab recommendations, events, catalogue sync, and search.",
   "type": "library",
   "license": "MIT",
   "authors": [
@@ -21,5 +21,16 @@
   },
   "scripts": {
     "test": "php tests/run.php"
-  }
+  },
+  "keywords": [
+    "neuronsearchlab",
+    "recommendation-systems",
+    "recommendations",
+    "personalization",
+    "product-discovery",
+    "search",
+    "sdk",
+    "php"
+  ],
+  "homepage": "https://docs.neuronsearchlab.com/sdk/php"
 }
