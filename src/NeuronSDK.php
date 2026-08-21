@@ -270,9 +270,9 @@ final class NeuronSDK
     {
         $itemId = $this->extractItemId($input);
 
-        if (!$this->isValidItemIdentifier($itemId)) {
+        if (!$this->isPositiveInteger($itemId)) {
             throw new InvalidArgumentException(
-                'itemId is required and must be a non-empty string'
+                'itemId is required and must be a positive integer returned by NSL'
             );
         }
 
@@ -294,7 +294,7 @@ final class NeuronSDK
         ]);
     }
 
-    public function setItemActive(string $itemId, bool $active): mixed
+    public function setItemActive(int $itemId, bool $active): mixed
     {
         return $this->patchItem([
             'itemId' => $itemId,
@@ -308,14 +308,14 @@ final class NeuronSDK
 
         if ($payload === []) {
             throw new InvalidArgumentException(
-                'itemId is required and must be a non-empty string'
+                'itemId is required and must be a positive integer returned by NSL'
             );
         }
 
         foreach ($payload as $entry) {
-            if (!is_array($entry) || !$this->isValidItemIdentifier($this->extractItemId($entry))) {
+            if (!is_array($entry) || !$this->isPositiveInteger($this->extractItemId($entry))) {
                 throw new InvalidArgumentException(
-                    'itemId is required and must be a non-empty string'
+                    'itemId is required and must be a positive integer returned by NSL'
                 );
             }
         }
@@ -323,8 +323,8 @@ final class NeuronSDK
         $responses = [];
 
         foreach ($payload as $entry) {
-            $itemId = (string) $this->extractItemId($entry);
-            $responses[] = $this->request('/items/' . rawurlencode($itemId), [
+            $itemId = $this->extractItemId($entry);
+            $responses[] = $this->request('/items/' . rawurlencode((string) $itemId), [
                 'method' => 'DELETE',
                 'headers' => $this->getHeaders(),
             ]);
@@ -337,7 +337,7 @@ final class NeuronSDK
         return [
             'message' => 'Items deleted successfully',
             'object' => 'list',
-            'itemIds' => array_map(fn (array $entry): string => (string) $this->extractItemId($entry), $payload),
+            'itemIds' => array_map(fn (array $entry): int => (int) $this->extractItemId($entry), $payload),
             'deletedCount' => count($responses),
             'data' => $responses,
         ];
@@ -354,7 +354,10 @@ final class NeuronSDK
             'user_id' => (string) $userId,
         ];
 
-        if (!empty($options['contextId'])) {
+        if (array_key_exists('contextId', $options)) {
+            if (!$this->isPositiveInteger($options['contextId'])) {
+                throw new InvalidArgumentException('contextId must be a positive integer');
+            }
             $query['context_id'] = (string) $options['contextId'];
         }
 
@@ -395,7 +398,10 @@ final class NeuronSDK
             'user_id' => (string) $userId,
         ];
 
-        if (!empty($options['contextId'])) {
+        if (array_key_exists('contextId', $options)) {
+            if (!$this->isPositiveInteger($options['contextId'])) {
+                throw new InvalidArgumentException('contextId must be a positive integer');
+            }
             $query['context_id'] = (string) $options['contextId'];
         }
 
@@ -818,9 +824,14 @@ final class NeuronSDK
         return $lines;
     }
 
-    private function isValidItemIdentifier(mixed $itemId): bool
+    private function isPositiveInteger(mixed $value): bool
     {
-        return is_string($itemId) && trim($itemId) !== '';
+        return is_int($value) && $value > 0;
+    }
+
+    private function isEventId(mixed $value): bool
+    {
+        return is_int($value) && $value !== 0;
     }
 
     private function normalizeOptionalString(mixed $value): ?string
@@ -852,26 +863,17 @@ final class NeuronSDK
         return $trimmed === '' ? null : $trimmed;
     }
 
-    private function extractItemId(array $input): ?string
+    private function extractItemId(array $input): mixed
     {
-        return $this->normalizeNonEmptyString(
-            $input['id'] ?? $input['item_id'] ?? $input['itemId'] ?? null
-        );
+        return $input['id'] ?? $input['item_id'] ?? $input['itemId'] ?? null;
     }
 
     private function normalizeItemPayload(array $data): array
     {
-        $id = $this->extractItemId($data);
-
-        if ($id !== null && !$this->isValidItemIdentifier($id)) {
-            throw new InvalidArgumentException('item id must be a non-empty string');
-        }
-
-        unset($data['itemId']);
-        unset($data['item_id']);
-
-        if ($id !== null) {
-            $data['id'] = $id;
+        if (array_key_exists('id', $data) || array_key_exists('itemId', $data) || array_key_exists('item_id', $data)) {
+            throw new InvalidArgumentException(
+                'item IDs are generated by NSL; omit id, itemId, and item_id when ingesting items'
+            );
         }
 
         return $data;
@@ -886,8 +888,7 @@ final class NeuronSDK
 
         $payload = ['query' => $query];
         $userId = $this->normalizeNonEmptyString($options['user_id'] ?? $options['userId'] ?? null);
-        $contextId = $this->normalizeOptionalString($options['context_id'] ?? $options['contextId'] ?? null);
-        $contextKey = $this->normalizeOptionalString($options['context_key'] ?? $options['contextKey'] ?? null);
+        $contextId = $options['context_id'] ?? $options['contextId'] ?? null;
         $requestId = $this->normalizeOptionalString($options['request_id'] ?? $options['requestId'] ?? null);
 
         if ($userId !== null) {
@@ -895,11 +896,10 @@ final class NeuronSDK
         }
 
         if ($contextId !== null) {
+            if (!$this->isPositiveInteger($contextId)) {
+                throw new InvalidArgumentException('contextId must be a positive integer');
+            }
             $payload['context_id'] = $contextId;
-        }
-
-        if ($contextKey !== null) {
-            $payload['context_key'] = $contextKey;
         }
 
         if (isset($options['limit']) && is_numeric($options['limit'])) {
@@ -974,22 +974,51 @@ final class NeuronSDK
     private function normalizeEventPayload(array $data): array
     {
         $userId = $this->normalizeNonEmptyString($data['user_id'] ?? $data['userId'] ?? null);
-        $itemId = $this->normalizeNonEmptyString($data['item_id'] ?? $data['itemId'] ?? null);
-        $type = $this->normalizeNonEmptyString(
-            $data['type']
-                ?? $data['event_type']
-                ?? $data['eventType']
+        $itemId = $data['item_id'] ?? $data['itemId'] ?? null;
+        $eventId = $data['event']
                 ?? $data['event_id']
                 ?? $data['eventId']
-                ?? null
-        );
+                ?? $data['event_type']
+                ?? $data['eventType']
+                ?? $data['type']
+                ?? null;
+        $contextId = $data['context_id'] ?? $data['contextId'] ?? null;
+        $deduplicationAliases = [
+            'deduplication_id',
+            'deduplicationId',
+            'idempotency_key',
+            'idempotencyKey',
+            'message_id',
+            'messageId',
+        ];
+        $deduplicationValues = [];
+        foreach ($deduplicationAliases as $alias) {
+            if (!array_key_exists($alias, $data)) {
+                continue;
+            }
+            $value = $data[$alias];
+            if (!is_string($value) || trim($value) === '' || strlen(trim($value)) > 255) {
+                throw new InvalidArgumentException(
+                    'deduplicationId must be a non-empty string of at most 255 characters'
+                );
+            }
+            $deduplicationValues[] = trim($value);
+        }
+        if (count(array_unique($deduplicationValues)) > 1) {
+            throw new InvalidArgumentException(
+                'deduplication id aliases must contain the same value'
+            );
+        }
+        $deduplicationId = $deduplicationValues[0] ?? null;
 
-        if ($userId === null || $itemId === null || $type === null) {
-            throw new InvalidArgumentException('type, userId, and itemId are required');
+        if ($userId === null || !$this->isPositiveInteger($itemId) || !$this->isEventId($eventId)) {
+            throw new InvalidArgumentException(
+                'eventId must be a non-zero integer, itemId must be a positive integer, and userId is required'
+            );
         }
 
-        if (!$this->isValidItemIdentifier($itemId)) {
-            throw new InvalidArgumentException('itemId must be a non-empty string');
+        if ($contextId !== null && !$this->isPositiveInteger($contextId)) {
+            throw new InvalidArgumentException('contextId must be a positive integer when provided');
         }
 
         $occurredAt = isset($data['occurred_at']) && is_int($data['occurred_at'])
@@ -1000,8 +1029,20 @@ final class NeuronSDK
 
         $data['user_id'] = $userId;
         $data['item_id'] = $itemId;
-        $data['type'] = $type;
+        $data['event_id'] = $eventId;
+        if ($contextId !== null) {
+            $data['context_id'] = $contextId;
+        }
+        foreach (['event', 'eventId', 'eventType', 'event_type', 'type', 'itemId', 'contextId'] as $alias) {
+            unset($data[$alias]);
+        }
         $data['occurred_at'] = $occurredAt;
+        foreach ($deduplicationAliases as $alias) {
+            unset($data[$alias]);
+        }
+        if ($deduplicationId !== null) {
+            $data['deduplication_id'] = $deduplicationId;
+        }
 
         return $data;
     }
