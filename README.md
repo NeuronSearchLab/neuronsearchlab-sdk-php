@@ -28,35 +28,34 @@ $sdk = new NeuronSDK([
     'maxBufferedEvents' => 5000,
 ]);
 
-$itemId = 'item-3187';
-
-$sdk->trackEvent([
-    'type' => 'view',
-    'userId' => '42',
-    'itemId' => $itemId,
-    'metadata' => ['action' => 'view'],
-])->wait();
-
-$sdk->upsertItem([
-    'id' => $itemId,
+$item = $sdk->upsertItem([
     'name' => 'Premier League Highlights',
     'description' => 'Matchday recap',
     'metadata' => ['league' => 'EPL'],
 ]);
+$itemId = $item['id']; // NSL-generated integer; persist this mapping
+
+$sdk->trackEvent([
+    'eventId' => 42, // from dashboard Event configuration
+    'userId' => '42',
+    'itemId' => $itemId,
+    'contextId' => 101,
+    'metadata' => ['action' => 'view'],
+])->wait();
 
 $sdk->patchItem(['itemId' => $itemId, 'active' => true]);
 $sdk->deleteItems(['itemId' => $itemId]);
 
 $recs = $sdk->getRecommendations([
     'userId' => '42',
-    'contextId' => 'homepage',
+    'contextId' => 101,
     'limit' => 5,
 ]);
 
 $results = $sdk->search([
     'query' => 'latest football highlights',
     'userId' => '42',
-    'contextId' => 'homepage',
+    'contextId' => 101,
     'limit' => 5,
     'filter' => ['category:sports'],
 ]);
