@@ -49,7 +49,14 @@ final class SDKLogger
                     fclose($handle);
                 }
             },
-            'redactKeys' => ['accessToken', 'authorization', 'Authorization'],
+            'redactKeys' => [
+                'accessToken',
+                'access_token',
+                'clientSecret',
+                'client_secret',
+                'authorization',
+                'Authorization',
+            ],
         ];
     }
 

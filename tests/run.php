@@ -5,6 +5,8 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use NeuronSearchLab\NeuronSDK;
+use NeuronSearchLab\SDKAuthError;
+use NeuronSearchLab\SDKHttpError;
 
 function expect(bool $condition, string $message): void
 {
@@ -321,6 +323,226 @@ function testRecommendationResponsePreservesRawBodyShape(): void
     expectSame('plain-text-response', $response, 'Expected raw non-JSON recommendation responses to be preserved.');
 }
 
+function testTokenProviderCachesToken(): void
+{
+    $providerContexts = [];
+    $authorizationHeaders = [];
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'tokenProvider' => static function (array $context) use (&$providerContexts): array {
+            $providerContexts[] = $context;
+
+            return ['accessToken' => 'provider-token', 'expiresInSeconds' => 3600];
+        },
+        'httpClient' => static function (string $url, array $init) use (&$authorizationHeaders): array {
+            $authorizationHeaders[] = $init['headers']['Authorization'] ?? null;
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => json_encode(['recommendations' => []], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $sdk->getRecommendations(['userId' => 'user-1']);
+    $sdk->getRecommendations(['userId' => 'user-2']);
+
+    expectSame(
+        [['forceRefresh' => false, 'reason' => 'initial']],
+        $providerContexts,
+        'Expected a cached token provider result.'
+    );
+    expectSame(
+        ['Bearer provider-token', 'Bearer provider-token'],
+        $authorizationHeaders,
+        'Expected the provider token on both API calls.'
+    );
+}
+
+function testOAuthClientCredentialsRefreshOnceAfter401(): void
+{
+    $tokenUrl = 'https://auth.neuronsearchlab.com/oauth2/token';
+    $tokenCalls = 0;
+    $apiCalls = 0;
+    $apiUrls = [];
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'oauthClientCredentials' => [
+            'clientId' => 'server-client',
+            'clientSecret' => 'server-secret',
+        ],
+        'httpClient' => static function (string $url, array $init) use (
+            $tokenUrl,
+            &$tokenCalls,
+            &$apiCalls,
+            &$apiUrls
+        ): array {
+            if ($url === $tokenUrl) {
+                $tokenCalls += 1;
+                expectSame(
+                    'Basic ' . base64_encode('server-client:server-secret'),
+                    $init['headers']['Authorization'] ?? null,
+                    'Expected OAuth Basic client authentication.'
+                );
+                parse_str((string) ($init['body'] ?? ''), $form);
+                expectSame('client_credentials', $form['grant_type'] ?? null, 'Expected client_credentials grant.');
+                expectSame(
+                    'neuronsearchlab-api/read neuronsearchlab-api/write',
+                    $form['scope'] ?? null,
+                    'Expected hosted NSL scopes.'
+                );
+
+                return [
+                    'status' => 200,
+                    'statusText' => 'OK',
+                    'headers' => [],
+                    'body' => json_encode([
+                        'access_token' => 'oauth-token-' . $tokenCalls,
+                        'token_type' => 'Bearer',
+                        'expires_in' => 3600,
+                    ], JSON_THROW_ON_ERROR),
+                ];
+            }
+
+            $apiCalls += 1;
+            $apiUrls[] = $url;
+            $authorization = $init['headers']['Authorization'] ?? null;
+            if ($authorization === 'Bearer oauth-token-1') {
+                return [
+                    'status' => 401,
+                    'statusText' => 'Unauthorized',
+                    'headers' => [],
+                    'body' => json_encode(['error' => 'expired_token'], JSON_THROW_ON_ERROR),
+                ];
+            }
+
+            expectSame('Bearer oauth-token-2', $authorization, 'Expected the refreshed API token.');
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => json_encode(['recommendations' => []], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $sdk->getRecommendations([
+        'userId' => 'user-1',
+        'contextId' => 101,
+    ]);
+    $sdk->getRecommendations(['userId' => 'user-2']);
+
+    expectSame(2, $tokenCalls, 'Expected initial acquisition plus one forced refresh.');
+    expectSame(3, $apiCalls, 'Expected one 401 retry and one cached-token request.');
+    expect(
+        str_contains($apiUrls[0], 'context_id=101'),
+        'Expected stable numeric context_id serialization.'
+    );
+}
+
+function testFinalEvent401IsNotRetriedInBackground(): void
+{
+    $providerCalls = 0;
+    $apiCalls = 0;
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'tokenProvider' => static function () use (&$providerCalls): string {
+            $providerCalls += 1;
+
+            return 'event-token-' . $providerCalls;
+        },
+        'collateWindowSeconds' => 0,
+        'maxEventRetries' => 5,
+        'httpClient' => static function () use (&$apiCalls): array {
+            $apiCalls += 1;
+
+            return [
+                'status' => 401,
+                'statusText' => 'Unauthorized',
+                'headers' => [],
+                'body' => json_encode(['error' => 'unauthorized'], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $pending = $sdk->trackEvent([
+        'eventId' => 41,
+        'userId' => 'user-1',
+        'itemId' => 1,
+    ]);
+    try {
+        $pending->wait();
+        throw new RuntimeException('Expected the final event 401 to surface.');
+    } catch (SDKHttpError $error) {
+        expectSame(401, $error->status, 'Expected the final 401 response.');
+    }
+
+    expectSame(2, $providerCalls, 'Expected exactly one authorization refresh.');
+    expectSame(2, $apiCalls, 'Expected exactly one event retry after refresh.');
+}
+
+function testEventIdempotencyAliasesNormalizeToCanonicalField(): void
+{
+    $requestBody = null;
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'collateWindowSeconds' => 0,
+        'httpClient' => static function (string $url, array $init) use (&$requestBody): array {
+            $requestBody = (string) ($init['body'] ?? '');
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => json_encode(['success' => true], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $sdk->trackEvent([
+        'eventId' => 41,
+        'userId' => 'user-1',
+        'itemId' => 1,
+        'messageId' => 'customer-event-001',
+    ])->wait();
+
+    $event = json_decode((string) $requestBody, true, 512, JSON_THROW_ON_ERROR);
+    expectSame('customer-event-001', $event['deduplication_id'] ?? null, 'Expected canonical deduplication_id.');
+    expect(!array_key_exists('messageId', $event), 'Expected the messageId alias to be removed.');
+}
+
+function testOAuthIssuerErrorsDoNotExposeSecrets(): void
+{
+    $secret = 'do-not-expose-this-secret';
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'oauthClientCredentials' => [
+            'clientId' => 'client-id',
+            'clientSecret' => $secret,
+            'tokenUrl' => 'https://auth.example.com/oauth2/token',
+        ],
+        'httpClient' => static fn (): array => [
+            'status' => 401,
+            'statusText' => 'Unauthorized',
+            'headers' => [],
+            'body' => 'issuer echoed ' . $secret,
+        ],
+    ]);
+
+    try {
+        $sdk->getRecommendations(['userId' => 'user-1']);
+        throw new RuntimeException('Expected OAuth token acquisition to fail.');
+    } catch (SDKAuthError $error) {
+        expectSame(401, $error->status, 'Expected OAuth issuer status.');
+        expect(!str_contains($error->getMessage(), $secret), 'Expected client secret redaction.');
+        expect(!str_contains($error->getMessage(), 'issuer echoed'), 'Expected issuer body redaction.');
+    }
+}
+
 $tests = [
     'testBatchesEventsAndPreservesOrder',
     'testPropagatesRecommendationRequestIds',
@@ -329,6 +551,11 @@ $tests = [
     'testAutoSessionIdIsAttached',
     'testWhitespaceRequestAndSessionIdsSuppressAutoPropagation',
     'testRecommendationResponsePreservesRawBodyShape',
+    'testTokenProviderCachesToken',
+    'testOAuthClientCredentialsRefreshOnceAfter401',
+    'testFinalEvent401IsNotRetriedInBackground',
+    'testEventIdempotencyAliasesNormalizeToCanonicalField',
+    'testOAuthIssuerErrorsDoNotExposeSecrets',
 ];
 
 foreach ($tests as $test) {

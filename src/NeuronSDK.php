@@ -12,7 +12,7 @@ final class NeuronSDK
 {
     private string $baseUrl;
 
-    private string $accessToken;
+    private AccessTokenManager $auth;
 
     private int $timeoutMs;
 
@@ -54,12 +54,11 @@ final class NeuronSDK
 
     public function __construct(array $config)
     {
-        if (empty($config['baseUrl']) || empty($config['accessToken'])) {
-            throw new InvalidArgumentException('baseUrl and accessToken are required');
+        if (empty($config['baseUrl'])) {
+            throw new InvalidArgumentException('baseUrl is required');
         }
 
         $this->baseUrl = self::normalizeApiBaseUrl((string) $config['baseUrl']);
-        $this->accessToken = (string) $config['accessToken'];
         $this->timeoutMs = (int) ($config['timeoutMs'] ?? 10000);
         $this->maxRetries = (int) ($config['maxRetries'] ?? 2);
         $this->collateWindowMs = (int) round(((float) ($config['collateWindowSeconds'] ?? 3)) * 1000);
@@ -85,12 +84,17 @@ final class NeuronSDK
             );
         }
 
+        $this->auth = new AccessTokenManager(
+            $config,
+            fn (string $url, array $init): array => $this->performHttpRequest($url, $init)
+        );
+
         $this->registerShutdownFlush();
     }
 
     public function setAccessToken(string $token): void
     {
-        $this->accessToken = $token;
+        $this->auth->setStaticAccessToken($token);
     }
 
     public function setBaseUrl(string $url): void
@@ -149,6 +153,14 @@ final class NeuronSDK
 
                     $this->flushRetryCount = 0;
                 } catch (Throwable $error) {
+                    if (!$this->isRetryableEventError($error)) {
+                        $this->flushRetryCount = 0;
+                        foreach ($batch as $entry) {
+                            $entry['pending']->reject($error);
+                        }
+                        continue;
+                    }
+
                     $this->eventBuffer = array_merge($batch, $this->eventBuffer);
                     $this->recalculateFirstBufferedAt();
                     $this->trimBufferIfNeeded();
@@ -458,11 +470,18 @@ final class NeuronSDK
 
         $retryOn = $init['retryOn'] ?? [429, 500, 502, 503, 504];
         $attempt = 0;
+        $authorizationRetryUsed = false;
         $requestId = logger()->shouldLog('DEBUG') || logger()->isPerformanceLoggingEnabled()
             ? sprintf('%s-%s', base_convert((string) time(), 10, 36), substr(bin2hex(random_bytes(4)), 0, 8))
             : null;
 
         while (true) {
+            $authToken = $this->auth->getToken();
+            $requestInit = $init;
+            $requestInit['headers'] = $this->withBearerAuthorization(
+                is_array($init['headers'] ?? null) ? $init['headers'] : [],
+                $authToken['value']
+            );
             $startTime = logger()->isPerformanceLoggingEnabled() ? microtime(true) : null;
 
             if (logger()->shouldLog('DEBUG')) {
@@ -478,7 +497,7 @@ final class NeuronSDK
             }
 
             try {
-                $response = $this->performHttpRequest($url, $init);
+                $response = $this->performHttpRequest($url, $requestInit);
                 $durationMs = $startTime !== null ? (int) round((microtime(true) - $startTime) * 1000) : null;
                 $status = (int) ($response['status'] ?? 0);
                 $statusText = (string) ($response['statusText'] ?? '');
@@ -506,6 +525,16 @@ final class NeuronSDK
                     }
 
                     return $bodyText === '' ? null : $this->parseResponseBody($bodyText);
+                }
+
+                if ($status === 401 && !$authorizationRetryUsed && $this->auth->isRefreshable()) {
+                    $authorizationRetryUsed = true;
+                    $this->auth->refreshAfterUnauthorized($authToken['generation']);
+                    logger()->info('Retrying request after refreshing authorization', [
+                        'method' => $method,
+                        'requestId' => $requestId,
+                    ]);
+                    continue;
                 }
 
                 if (logger()->shouldLog('WARN')) {
@@ -547,6 +576,8 @@ final class NeuronSDK
                     $statusText,
                     is_array($body) || is_string($body) ? $body : null
                 );
+            } catch (SDKHttpError | SDKAuthError $error) {
+                throw $error;
             } catch (SDKTimeoutError $error) {
                 if ($attempt < $this->maxRetries) {
                     $attempt += 1;
@@ -686,7 +717,10 @@ final class NeuronSDK
                     $options
                 );
             } catch (SDKHttpError $error) {
-                if (!$this->arrayBatchingRejected) {
+                if (
+                    !$this->arrayBatchingRejected
+                    && in_array($error->status, [400, 405, 413, 415, 422], true)
+                ) {
                     $this->arrayBatchingRejected = true;
                     logger()->warn('Array payload rejected, falling back to single-event sends', [
                         'status' => $error->status,
@@ -728,8 +762,19 @@ final class NeuronSDK
     {
         return array_merge([
             'Content-Type' => 'application/json',
-            'Authorization' => 'Bearer ' . $this->accessToken,
         ], $extra);
+    }
+
+    private function withBearerAuthorization(array $headers, string $accessToken): array
+    {
+        foreach (array_keys($headers) as $name) {
+            if (is_string($name) && strtolower($name) === 'authorization') {
+                unset($headers[$name]);
+            }
+        }
+        $headers['Authorization'] = 'Bearer ' . $accessToken;
+
+        return $headers;
     }
 
     private function shouldFlushByAge(): bool
@@ -770,6 +815,18 @@ final class NeuronSDK
         $this->firstBufferedAt = $this->eventBuffer === []
             ? null
             : (float) $this->eventBuffer[0]['enqueueTime'];
+    }
+
+    private function isRetryableEventError(Throwable $error): bool
+    {
+        if ($error instanceof SDKAuthError) {
+            return false;
+        }
+        if ($error instanceof SDKHttpError) {
+            return in_array($error->status, [429, 500, 502, 503, 504], true);
+        }
+
+        return true;
     }
 
     private function backoffMs(int $attempt): float
