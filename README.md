@@ -136,6 +136,32 @@ $sdk->trackEvent([
 
 The aliases `deduplication_id`, `idempotencyKey`, `idempotency_key`, `messageId`, and `message_id` are accepted and serialized only as `deduplication_id`.
 
+## Searches steer recommendations
+
+Every search is recorded as an event on your Search event type and weighs into that user's later recommendations by its weight, exactly as a click or a purchase does. The results you send are kept as impressions, not as items the user chose.
+
+```php
+// NSL runs the search.
+$sdk->search(['query' => 'waterproof trail shoes', 'userId' => 'user-123']);
+
+// Your engine ran it: record it with the ids it showed, and get
+// recommendations that complement them (those ids are left out).
+$extras = $sdk->search([
+    'query' => 'waterproof trail shoes',
+    'userId' => 'user-123',
+    'resultItemIds' => [1042, 1077, 1013],
+]);
+
+// Record only. eventId is optional and defaults to your Search event.
+$sdk->trackSearch([
+    'userId' => 'user-123',
+    'query' => 'waterproof trail shoes',
+    'resultItemIds' => [1042, 1077],
+])->wait();
+```
+
+When searches steered a `getRecommendations()` response it carries `search_intent`, with their share of the user's recent event weight and the queries involved.
+
 ## Notes
 
 - The package supports PHP 8.2 and newer maintained PHP 8.x releases; CI exercises PHP 8.2, 8.3, 8.4, and 8.5.
