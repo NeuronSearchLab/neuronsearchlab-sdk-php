@@ -260,6 +260,22 @@ final class NeuronSDK
         return $pending;
     }
 
+    /**
+     * Record a search your own engine ran, as an event. It weighs into the
+     * user's recommendations by the weight of your Search event, like any
+     * click or purchase. Use search() with resultItemIds when you also want
+     * NSL's recommendations back in the same call.
+     */
+    public function trackSearch(array $data): PendingResult
+    {
+        if ($this->normalizeOptionalString($data['query'] ?? null) === null) {
+            throw new InvalidArgumentException('query is required');
+        }
+        unset($data['item_id'], $data['itemId']);
+
+        return $this->trackEvent($data);
+    }
+
     public function createEvent(array $data): PendingResult
     {
         return $this->trackEvent($data);
@@ -881,6 +897,18 @@ final class NeuronSDK
         return $lines;
     }
 
+    private function assertResultItemIds(mixed $value): void
+    {
+        if (!is_array($value) || !array_is_list($value)) {
+            throw new InvalidArgumentException('resultItemIds must be a list of positive integer item ids returned by NSL');
+        }
+        foreach ($value as $id) {
+            if (!$this->isPositiveInteger($id)) {
+                throw new InvalidArgumentException('resultItemIds must be a list of positive integer item ids returned by NSL');
+            }
+        }
+    }
+
     private function isPositiveInteger(mixed $value): bool
     {
         return is_int($value) && $value > 0;
@@ -965,6 +993,14 @@ final class NeuronSDK
 
         if ($requestId !== null) {
             $payload['request_id'] = $requestId;
+        }
+
+        // Your own engine ran the query: NSL records it with these ids and
+        // returns recommendations that complement them.
+        if (array_key_exists('result_item_ids', $options) || array_key_exists('resultItemIds', $options)) {
+            $resultItemIds = $options['result_item_ids'] ?? $options['resultItemIds'] ?? null;
+            $this->assertResultItemIds($resultItemIds);
+            $payload['result_item_ids'] = array_values($resultItemIds);
         }
 
         $filters = $options['filter'] ?? $options['filters'] ?? null;
@@ -1068,10 +1104,32 @@ final class NeuronSDK
         }
         $deduplicationId = $deduplicationValues[0] ?? null;
 
-        if ($userId === null || !$this->isPositiveInteger($itemId) || !$this->isEventId($eventId)) {
+        // A query with no item is a search event: it steers the user's
+        // recommendations by the weight of the tenant's Search event, and the
+        // API defaults event_id to that event when none is sent.
+        $query = $this->normalizeOptionalString($data['query'] ?? null);
+        $isSearch = $itemId === null && $query !== null;
+        $hasResultIds = array_key_exists('result_item_ids', $data) || array_key_exists('resultItemIds', $data);
+        $resultItemIds = $data['result_item_ids'] ?? $data['resultItemIds'] ?? null;
+
+        if ($isSearch) {
+            if ($userId === null) {
+                throw new InvalidArgumentException('userId is required');
+            }
+            if ($eventId !== null && !$this->isEventId($eventId)) {
+                throw new InvalidArgumentException('eventId must be a non-zero integer when provided');
+            }
+        } elseif ($userId === null || !$this->isPositiveInteger($itemId) || !$this->isEventId($eventId)) {
             throw new InvalidArgumentException(
-                'eventId must be a non-zero integer, itemId must be a positive integer, and userId is required'
+                'eventId must be a non-zero integer, itemId must be a positive integer, and userId is required (or send query without itemId for a search event)'
             );
+        }
+
+        if ($hasResultIds) {
+            if (!$isSearch) {
+                throw new InvalidArgumentException('resultItemIds is only accepted on a search event: a query without itemId');
+            }
+            $this->assertResultItemIds($resultItemIds);
         }
 
         if ($contextId !== null && !$this->isPositiveInteger($contextId)) {
@@ -1085,12 +1143,23 @@ final class NeuronSDK
                 : time());
 
         $data['user_id'] = $userId;
-        $data['item_id'] = $itemId;
-        $data['event_id'] = $eventId;
+        unset($data['item_id'], $data['event_id'], $data['query'], $data['result_item_ids']);
+        if ($itemId !== null) {
+            $data['item_id'] = $itemId;
+        }
+        if ($eventId !== null) {
+            $data['event_id'] = $eventId;
+        }
+        if ($query !== null) {
+            $data['query'] = $query;
+        }
+        if ($hasResultIds) {
+            $data['result_item_ids'] = array_values($resultItemIds);
+        }
         if ($contextId !== null) {
             $data['context_id'] = $contextId;
         }
-        foreach (['event', 'eventId', 'eventType', 'event_type', 'type', 'itemId', 'contextId'] as $alias) {
+        foreach (['event', 'eventId', 'eventType', 'event_type', 'type', 'itemId', 'contextId', 'resultItemIds'] as $alias) {
             unset($data[$alias]);
         }
         $data['occurred_at'] = $occurredAt;

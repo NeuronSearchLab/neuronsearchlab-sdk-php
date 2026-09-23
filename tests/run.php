@@ -543,6 +543,88 @@ function testOAuthIssuerErrorsDoNotExposeSecrets(): void
     }
 }
 
+function recordingSdk(array &$requests, array $responseBody = ['success' => true]): NeuronSDK
+{
+    return new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'collateWindowSeconds' => 0,
+        'backoffStrategy' => static fn (): int => 1,
+        'httpClient' => static function (string $url, array $init) use (&$requests, $responseBody): array {
+            $requests[] = ['url' => $url, 'init' => $init];
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => [],
+                'body' => json_encode($responseBody, JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+}
+
+function lastEvent(array $requests): array
+{
+    $body = json_decode($requests[array_key_last($requests)]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
+
+    return array_is_list($body) ? $body[0] : $body;
+}
+
+function testSearchIsSentAsAnEvent(): void
+{
+    $requests = [];
+    $sdk = recordingSdk($requests);
+
+    $sdk->trackSearch(['userId' => 'u1', 'query' => ' trail shoes ', 'resultItemIds' => [3, 1, 2]]);
+    $sdk->flushEvents();
+    $event = lastEvent($requests);
+    expectSame('https://api.example.com/v1/events', $requests[0]['url'], 'Expected search events on /events.');
+    expectSame('u1', $event['user_id'], 'Expected user_id.');
+    expectSame('trail shoes', $event['query'], 'Expected trimmed query.');
+    expectSame([3, 1, 2], $event['result_item_ids'], 'Expected result ids in rank order.');
+    expect(!array_key_exists('item_id', $event), 'A search event has no item.');
+    expect(!array_key_exists('event_id', $event), 'event_id defaults server-side.');
+    expect(!array_key_exists('resultItemIds', $event), 'Aliases are normalised.');
+
+    $sdk->trackEvent(['eventId' => 42, 'userId' => 'u1', 'itemId' => 3, 'query' => 'trail shoes']);
+    $sdk->flushEvents();
+    $click = lastEvent($requests);
+    expectSame(3, $click['item_id'], 'An item event keeps its item.');
+    expectSame('trail shoes', $click['query'], 'An item event keeps the search it came from.');
+}
+
+function testRejectsMalformedSearchEvents(): void
+{
+    $requests = [];
+    $sdk = recordingSdk($requests);
+    $cases = [
+        [fn () => $sdk->trackSearch(['userId' => 'u1', 'query' => '  ']), 'query is required'],
+        [fn () => $sdk->trackEvent(['userId' => 'u1']), 'search event'],
+        [fn () => $sdk->trackEvent(['eventId' => 42, 'userId' => 'u1', 'itemId' => 3, 'resultItemIds' => [1]]), 'only accepted on a search event'],
+        [fn () => $sdk->trackSearch(['userId' => 'u1', 'query' => 'x', 'resultItemIds' => ['sku-1']]), 'positive integer'],
+        [fn () => $sdk->search(['query' => 'x', 'resultItemIds' => [0]]), 'positive integer'],
+    ];
+    foreach ($cases as [$call, $message]) {
+        try {
+            $call();
+            throw new RuntimeException('Expected InvalidArgumentException containing: ' . $message);
+        } catch (InvalidArgumentException $error) {
+            expect(str_contains($error->getMessage(), $message), 'Unexpected message: ' . $error->getMessage());
+        }
+    }
+    expectSame(0, count($requests), 'Nothing is sent for invalid input.');
+}
+
+function testSearchForwardsYourEnginesResults(): void
+{
+    $requests = [];
+    $sdk = recordingSdk($requests, ['object' => 'list', 'url' => '/v1/search', 'data' => [], 'search' => ['source' => 'client']]);
+    $result = $sdk->search(['query' => 'trail shoes', 'userId' => 'u1', 'resultItemIds' => [7, 8]]);
+    $payload = json_decode($requests[0]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
+    expectSame([7, 8], $payload['result_item_ids'], 'Expected result ids on the search payload.');
+    expectSame('client', $result['search']['source'], 'Expected the search block in the response.');
+}
+
 $tests = [
     'testBatchesEventsAndPreservesOrder',
     'testPropagatesRecommendationRequestIds',
@@ -556,6 +638,9 @@ $tests = [
     'testFinalEvent401IsNotRetriedInBackground',
     'testEventIdempotencyAliasesNormalizeToCanonicalField',
     'testOAuthIssuerErrorsDoNotExposeSecrets',
+    'testSearchIsSentAsAnEvent',
+    'testRejectsMalformedSearchEvents',
+    'testSearchForwardsYourEnginesResults',
 ];
 
 foreach ($tests as $test) {
