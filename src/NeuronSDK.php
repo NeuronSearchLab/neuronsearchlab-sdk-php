@@ -10,6 +10,9 @@ use Throwable;
 
 final class NeuronSDK
 {
+    /** The most recommendation sets the API serves in one batch; larger calls are split. */
+    public const MAX_RECOMMENDATION_SETS_PER_BATCH = 8;
+
     private string $baseUrl;
 
     private AccessTokenManager $auth;
@@ -412,6 +415,108 @@ final class NeuronSDK
         }
 
         return $response;
+    }
+
+    /**
+     * Get every recommendation rail a page needs in one request.
+     * POST /v1/recommendations/batch
+     *
+     * Each set is served and billed on its own, with its own request_id for
+     * event attribution, but the visitor's state is read once for the page. A
+     * set that fails carries its own `error` without failing the others. More
+     * than MAX_RECOMMENDATION_SETS_PER_BATCH sets are sent as several batches.
+     *
+     * @param array{
+     *     userId?: string|int,
+     *     anonymousId?: string,
+     *     sessionId?: string,
+     *     requestId?: string,
+     *     sets: list<array{key: string, contextId: int, limit?: int, itemId?: int, cartItemIds?: list<int>,
+     *         pageType?: string, filters?: list<string>, scope?: array<string, mixed>, query?: string}>
+     * } $options
+     * @return array{object: string, request_id: string, results: list<array<string, mixed>>,
+     *     sets: array<string, array<string, mixed>>, usage: array<string, int>}
+     */
+    public function getRecommendationSets(array $options): array
+    {
+        $userId = $options['userId'] ?? null;
+        if ($userId !== null && !is_string($userId) && !is_int($userId)) {
+            throw new InvalidArgumentException('userId must be a string or number');
+        }
+        $sets = $options['sets'] ?? null;
+        if (!is_array($sets) || $sets === []) {
+            throw new InvalidArgumentException('sets must be a non-empty array');
+        }
+        $keys = [];
+        foreach ($sets as $set) {
+            $key = is_array($set) ? ($set['key'] ?? null) : null;
+            if (!is_string($key) || preg_match('/^[A-Za-z0-9_.:-]{1,64}$/', $key) !== 1) {
+                throw new InvalidArgumentException('Each set needs a key matching [A-Za-z0-9_.:-]{1,64}');
+            }
+            if (isset($keys[$key])) {
+                throw new InvalidArgumentException(sprintf('Duplicate set key "%s"', $key));
+            }
+            $keys[$key] = true;
+            if (!$this->isPositiveInteger($set['contextId'] ?? null)) {
+                throw new InvalidArgumentException(sprintf('Set "%s": contextId must be a positive integer', $key));
+            }
+        }
+
+        $requestId = isset($options['requestId']) && is_string($options['requestId']) && $options['requestId'] !== ''
+            ? $options['requestId']
+            : self::generateSessionId();
+        $results = [];
+        $usage = ['sets' => 0, 'computed' => 0, 'reused' => 0, 'coalesced' => 0];
+        foreach (array_chunk(array_values($sets), self::MAX_RECOMMENDATION_SETS_PER_BATCH) as $index => $chunk) {
+            // Each chunk is its own batch, so each needs its own idempotency key.
+            $chunkRequestId = $index === 0 ? $requestId : self::generateSessionId();
+            $body = array_filter([
+                'request_id' => $chunkRequestId,
+                'user_id' => $userId !== null ? (string) $userId : null,
+                'anonymous_id' => $options['anonymousId'] ?? null,
+                'session_id' => $options['sessionId'] ?? null,
+            ], static fn (mixed $value): bool => $value !== null && $value !== '');
+            $body['requests'] = array_map(static fn (array $set): array => array_filter([
+                'key' => $set['key'],
+                'context_id' => $set['contextId'],
+                'limit' => $set['limit'] ?? null,
+                'item_id' => $set['itemId'] ?? null,
+                'cart_item_ids' => !empty($set['cartItemIds']) ? array_values($set['cartItemIds']) : null,
+                'page_type' => $set['pageType'] ?? null,
+                'filters' => !empty($set['filters']) ? array_values($set['filters']) : null,
+                'scope' => $set['scope'] ?? null,
+                'query' => $set['query'] ?? null,
+            ], static fn (mixed $value): bool => $value !== null && $value !== ''), $chunk);
+
+            $response = $this->request('/recommendations/batch', [
+                'method' => 'POST',
+                'headers' => $this->getHeaders(['X-Request-Id' => $chunkRequestId]),
+                'body' => $this->encodeJson($body),
+            ]);
+            if (is_array($response)) {
+                foreach ($response['results'] ?? [] as $result) {
+                    $results[] = $result;
+                }
+                foreach (array_keys($usage) as $field) {
+                    $usage[$field] += (int) ($response['usage'][$field] ?? 0);
+                }
+            }
+        }
+
+        $byKey = [];
+        foreach ($results as $result) {
+            if (is_array($result) && isset($result['key'])) {
+                $byKey[(string) $result['key']] = $result;
+            }
+        }
+
+        return [
+            'object' => 'recommendation_set_list',
+            'request_id' => $requestId,
+            'results' => $results,
+            'sets' => $byKey,
+            'usage' => $usage,
+        ];
     }
 
     public function getAutoRecommendations(array $options): mixed

@@ -625,6 +625,93 @@ function testSearchForwardsYourEnginesResults(): void
     expectSame('client', $result['search']['source'], 'Expected the search block in the response.');
 }
 
+function testRecommendationSetsAreOneBatchRequest(): void
+{
+    $requests = [];
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'httpClient' => static function (string $url, array $init) use (&$requests): array {
+            $requests[] = ['url' => $url, 'init' => $init];
+            $body = json_decode($init['body'], true, 512, JSON_THROW_ON_ERROR);
+            $results = array_map(static fn (array $set): array => [
+                'key' => $set['key'],
+                'status' => $set['context_id'] === 999 ? 404 : 200,
+                'request_id' => $set['key'] . '-id',
+                'context_id' => $set['context_id'],
+            ] + ($set['context_id'] === 999 ? ['error' => ['code' => 'invalid_context', 'message' => 'Context not found']] : ['data' => []]), $body['requests']);
+
+            return [
+                'status' => 200,
+                'statusText' => 'OK',
+                'headers' => ['content-type' => 'application/json'],
+                'body' => json_encode([
+                    'object' => 'recommendation_set_list',
+                    'request_id' => $body['request_id'],
+                    'results' => $results,
+                    'usage' => ['sets' => count($results), 'computed' => count($results), 'reused' => 0, 'coalesced' => 0],
+                ], JSON_THROW_ON_ERROR),
+            ];
+        },
+    ]);
+
+    $page = $sdk->getRecommendationSets([
+        'userId' => 'u1',
+        'requestId' => '11111111-1111-4111-8111-111111111111',
+        'sets' => [
+            ['key' => 'for_you', 'contextId' => 101, 'limit' => 12],
+            ['key' => 'similar', 'contextId' => 102, 'limit' => 4, 'itemId' => 55, 'filters' => ['type:van']],
+            ['key' => 'gone', 'contextId' => 999],
+        ],
+    ]);
+
+    expectSame(1, count($requests), 'Expected one batch request.');
+    expectSame('https://api.example.com/v1/recommendations/batch', $requests[0]['url'], 'Expected the batch endpoint.');
+    expectSame('POST', $requests[0]['init']['method'], 'Expected POST.');
+    $body = json_decode($requests[0]['init']['body'], true, 512, JSON_THROW_ON_ERROR);
+    expectSame('11111111-1111-4111-8111-111111111111', $body['request_id'], 'Expected the caller request id.');
+    expectSame('u1', $body['user_id'], 'Expected the user id.');
+    expectSame(['key' => 'similar', 'context_id' => 102, 'limit' => 4, 'item_id' => 55, 'filters' => ['type:van']], $body['requests'][1], 'Expected the set fields.');
+    expectSame('similar-id', $page['sets']['similar']['request_id'], 'Expected results keyed by set.');
+    expectSame(404, $page['sets']['gone']['status'], 'Expected the failing set to carry its own status.');
+    expectSame(3, $page['usage']['sets'], 'Expected usage totals.');
+}
+
+function testRecommendationSetsSplitLargeCallsAndValidateInput(): void
+{
+    $requests = [];
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'httpClient' => static function (string $url, array $init) use (&$requests): array {
+            $requests[] = json_decode($init['body'], true, 512, JSON_THROW_ON_ERROR);
+            return ['status' => 200, 'statusText' => 'OK', 'headers' => [], 'body' => json_encode(['results' => []], JSON_THROW_ON_ERROR)];
+        },
+    ]);
+    $sets = [];
+    for ($i = 0; $i < NeuronSDK::MAX_RECOMMENDATION_SETS_PER_BATCH + 1; $i++) {
+        $sets[] = ['key' => 'rail_' . $i, 'contextId' => $i + 1];
+    }
+    $sdk->getRecommendationSets(['anonymousId' => 'anon', 'sets' => $sets]);
+    expectSame(2, count($requests), 'Expected the call to be split into two batches.');
+    expect($requests[0]['request_id'] !== $requests[1]['request_id'], 'Expected a request id per batch.');
+
+    foreach ([
+        ['sets' => []],
+        ['sets' => [['key' => 'bad key', 'contextId' => 1]]],
+        ['sets' => [['key' => 'a', 'contextId' => 1], ['key' => 'a', 'contextId' => 2]]],
+        ['sets' => [['key' => 'a', 'contextId' => 0]]],
+    ] as $invalid) {
+        $thrown = false;
+        try {
+            $sdk->getRecommendationSets($invalid);
+        } catch (InvalidArgumentException) {
+            $thrown = true;
+        }
+        expect($thrown, 'Expected invalid sets to be rejected.');
+    }
+}
+
 $tests = [
     'testBatchesEventsAndPreservesOrder',
     'testPropagatesRecommendationRequestIds',
@@ -641,6 +728,8 @@ $tests = [
     'testSearchIsSentAsAnEvent',
     'testRejectsMalformedSearchEvents',
     'testSearchForwardsYourEnginesResults',
+    'testRecommendationSetsAreOneBatchRequest',
+    'testRecommendationSetsSplitLargeCallsAndValidateInput',
 ];
 
 foreach ($tests as $test) {
