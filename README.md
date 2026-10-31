@@ -64,6 +64,30 @@ $results = $sdk->search([
 ]);
 ```
 
+### Several rails on one page
+
+A page with several recommendation rails should fetch them together. One
+request reads the visitor's state once for the whole page; each set is still
+served, attributed and billed on its own.
+
+```php
+$page = $sdk->getRecommendationSets([
+    'userId' => '42',
+    'sets' => [
+        ['key' => 'for_you', 'contextId' => 101, 'limit' => 12],
+        ['key' => 'trending', 'contextId' => 102, 'limit' => 8],
+        ['key' => 'similar', 'contextId' => 103, 'limit' => 4, 'itemId' => 5501],
+    ],
+]);
+
+$page['sets']['for_you']['data'];        // the items for that rail
+$page['sets']['similar']['request_id'];  // pass this with events from that rail
+$page['sets']['trending']['error'] ?? null; // set only if that one rail failed
+```
+
+Up to 8 sets go in one request; larger calls are split. Pass `requestId` to
+make a retry idempotent: the same id never bills a set twice.
+
 ## Resources
 
 - Docs hub: https://docs.neuronsearchlab.com
@@ -173,9 +197,12 @@ When searches steered a `getRecommendations()` response it carries `search_inten
 ## Release Flow
 
 - CI runs on pushes and pull requests against PHP 8.2, 8.3, 8.4, and 8.5.
-- Packagist is already connected to the GitHub repository and auto-updates from pushes.
-- Pushes to `main` refresh `dev-main` on Packagist, and pushed `v*` git tags become installable versioned releases.
-- `.github/workflows/publish.yml` runs validation and tests on tag pushes before or alongside those releases.
+- Packagist is connected to the GitHub repository and auto-updates from pushes.
+- To release, bump `VERSION` in a pull request. When it merges to `main`,
+  `.github/workflows/tag-release.yml` runs the tests, tags `v<VERSION>` and
+  publishes a GitHub release; Packagist picks the tag up as an installable
+  version. Pushes that leave `VERSION` alone only refresh `dev-main`.
+- `.github/workflows/publish.yml` still validates any tag pushed by hand.
 
 ## License
 
