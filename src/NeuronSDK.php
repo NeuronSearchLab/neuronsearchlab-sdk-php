@@ -426,12 +426,20 @@ final class NeuronSDK
      * set that fails carries its own `error` without failing the others. More
      * than MAX_RECOMMENDATION_SETS_PER_BATCH sets are sent as several batches.
      *
+     * Pass `groupId` to load a context group's rails by its ID (Contexts page):
+     * each rail comes back under its context key, in the group's order, under
+     * the group's rules. `limit` sizes every rail; `sets` is then optional, and
+     * a set without a key adjusts the group rail with that contextId. A group
+     * request is always one batch.
+     *
      * @param array{
      *     userId?: string|int,
      *     anonymousId?: string,
      *     sessionId?: string,
      *     requestId?: string,
-     *     sets: list<array{key: string, contextId: int, limit?: int, itemId?: int, cartItemIds?: list<int>,
+     *     groupId?: int,
+     *     limit?: int,
+     *     sets?: list<array{key?: string, contextId: int, limit?: int, itemId?: int, cartItemIds?: list<int>,
      *         pageType?: string, filters?: list<string>, scope?: array<string, mixed>, query?: string}>
      * } $options
      * @return array{object: string, request_id: string, results: list<array<string, mixed>>,
@@ -443,12 +451,26 @@ final class NeuronSDK
         if ($userId !== null && !is_string($userId) && !is_int($userId)) {
             throw new InvalidArgumentException('userId must be a string or number');
         }
-        $sets = $options['sets'] ?? null;
-        if (!is_array($sets) || $sets === []) {
-            throw new InvalidArgumentException('sets must be a non-empty array');
+        $groupId = $options['groupId'] ?? null;
+        if ($groupId !== null && !$this->isPositiveInteger($groupId)) {
+            throw new InvalidArgumentException('groupId must be a positive integer');
+        }
+        if (isset($options['limit']) && $groupId === null) {
+            throw new InvalidArgumentException('limit applies to a group request; give each set its own limit');
+        }
+        $sets = $options['sets'] ?? ($groupId !== null ? [] : null);
+        if (!is_array($sets) || ($sets === [] && $groupId === null)) {
+            throw new InvalidArgumentException('sets must be a non-empty array, or pass a groupId');
         }
         $keys = [];
         foreach ($sets as $set) {
+            // A group request may adjust one of the group's rails without naming it.
+            if ($groupId !== null && is_array($set) && !array_key_exists('key', $set)) {
+                if (!$this->isPositiveInteger($set['contextId'] ?? null)) {
+                    throw new InvalidArgumentException('A group rail adjustment needs a positive integer contextId');
+                }
+                continue;
+            }
             $key = is_array($set) ? ($set['key'] ?? null) : null;
             if (!is_string($key) || preg_match('/^[A-Za-z0-9_.:-]{1,64}$/', $key) !== 1) {
                 throw new InvalidArgumentException('Each set needs a key matching [A-Za-z0-9_.:-]{1,64}');
@@ -467,7 +489,11 @@ final class NeuronSDK
             : self::generateSessionId();
         $results = [];
         $usage = ['sets' => 0, 'computed' => 0, 'reused' => 0, 'coalesced' => 0];
-        foreach (array_chunk(array_values($sets), self::MAX_RECOMMENDATION_SETS_PER_BATCH) as $index => $chunk) {
+        // The server expands a group, so a group request cannot be split here.
+        $chunks = $groupId !== null
+            ? [array_values($sets)]
+            : array_chunk(array_values($sets), self::MAX_RECOMMENDATION_SETS_PER_BATCH);
+        foreach ($chunks as $index => $chunk) {
             // Each chunk is its own batch, so each needs its own idempotency key.
             $chunkRequestId = $index === 0 ? $requestId : self::generateSessionId();
             $body = array_filter([
@@ -475,9 +501,11 @@ final class NeuronSDK
                 'user_id' => $userId !== null ? (string) $userId : null,
                 'anonymous_id' => $options['anonymousId'] ?? null,
                 'session_id' => $options['sessionId'] ?? null,
+                'group_id' => $groupId,
+                'limit' => $groupId !== null ? ($options['limit'] ?? null) : null,
             ], static fn (mixed $value): bool => $value !== null && $value !== '');
             $body['requests'] = array_map(static fn (array $set): array => array_filter([
-                'key' => $set['key'],
+                'key' => $set['key'] ?? null,
                 'context_id' => $set['contextId'],
                 'limit' => $set['limit'] ?? null,
                 'item_id' => $set['itemId'] ?? null,
@@ -513,6 +541,7 @@ final class NeuronSDK
         return [
             'object' => 'recommendation_set_list',
             'request_id' => $requestId,
+            ...($groupId !== null ? ['group_id' => (int) $groupId] : []),
             'results' => $results,
             'sets' => $byKey,
             'usage' => $usage,

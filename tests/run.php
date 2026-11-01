@@ -712,7 +712,58 @@ function testRecommendationSetsSplitLargeCallsAndValidateInput(): void
     }
 }
 
+function testRecommendationSetsLoadAGroupById(): void
+{
+    $requests = [];
+    $sdk = new NeuronSDK([
+        'baseUrl' => 'https://api.example.com/v1',
+        'accessToken' => 'token',
+        'httpClient' => static function (string $url, array $init) use (&$requests): array {
+            $body = json_decode($init['body'], true, 512, JSON_THROW_ON_ERROR);
+            $requests[] = $body;
+            return ['status' => 200, 'statusText' => 'OK', 'headers' => [], 'body' => json_encode([
+                'group_id' => $body['group_id'],
+                'results' => [
+                    ['key' => 'for_you', 'status' => 200, 'request_id' => 'a', 'context_id' => 2323, 'data' => []],
+                    ['key' => 'similar', 'status' => 200, 'request_id' => 'b', 'context_id' => 2324, 'data' => []],
+                ],
+            ], JSON_THROW_ON_ERROR)];
+        },
+    ]);
+
+    $page = $sdk->getRecommendationSets([
+        'userId' => 'u1',
+        'groupId' => 12,
+        'limit' => 6,
+        'sets' => [['contextId' => 2324, 'itemId' => 3187]],
+    ]);
+    expectSame(1, count($requests), 'Expected one batch for a group.');
+    expectSame(12, $requests[0]['group_id'], 'Expected the group id.');
+    expectSame(6, $requests[0]['limit'], 'Expected the group-wide limit.');
+    expectSame([['context_id' => 2324, 'item_id' => 3187]], $requests[0]['requests'], 'Expected the rail adjustment without a key.');
+    expectSame(12, $page['group_id'], 'Expected group_id in the result.');
+    expectSame(['for_you', 'similar'], array_keys($page['sets']), 'Expected rails keyed by context key.');
+
+    $sdk->getRecommendationSets(['userId' => 'u1', 'groupId' => 12]);
+    expectSame([], $requests[1]['requests'], 'Expected a group request without sets.');
+
+    foreach ([
+        ['groupId' => 0],
+        ['limit' => 5, 'sets' => [['key' => 'a', 'contextId' => 1]]],
+        ['sets' => [['contextId' => 1]]],
+    ] as $invalid) {
+        $thrown = false;
+        try {
+            $sdk->getRecommendationSets($invalid);
+        } catch (InvalidArgumentException) {
+            $thrown = true;
+        }
+        expect($thrown, 'Expected invalid group input to be rejected.');
+    }
+}
+
 $tests = [
+    'testRecommendationSetsLoadAGroupById',
     'testBatchesEventsAndPreservesOrder',
     'testPropagatesRecommendationRequestIds',
     'testSearchPostsToCoreApiEndpointAndPropagatesRequestId',
