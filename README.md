@@ -88,6 +88,23 @@ $page['sets']['trending']['error'] ?? null; // set only if that one rail failed
 Up to 8 sets go in one request; larger calls are split. Pass `requestId` to
 make a retry idempotent: the same id never bills a set twice.
 
+#### Load a context group
+
+Group the rails on the Contexts page, then load them by the group's ID (shown
+next to the group's name). Each rail comes back under its context key, in the
+group's order, and the group's rules apply:
+
+```php
+$page = $sdk->getRecommendationSets(['userId' => '42', 'groupId' => 12, 'limit' => 12]);
+
+// Adjust one rail, e.g. seed "similar items" with the product on screen:
+$page = $sdk->getRecommendationSets([
+    'userId' => '42',
+    'groupId' => 12,
+    'sets' => [['contextId' => 103, 'itemId' => 5501]],
+]);
+```
+
 ## Resources
 
 - Docs hub: https://docs.neuronsearchlab.com
